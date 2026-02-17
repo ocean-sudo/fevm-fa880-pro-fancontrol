@@ -1,0 +1,16 @@
+[general]
+fan1_path = "/sys/devices/platform/fevm-ip3-wmi/fan1_duty"
+fan2_path = "/sys/devices/platform/fevm-ip3-wmi/fan2_duty"
+poll_sec = 1.0
+min_duty = 20
+max_duty = 100
+failsafe_duty = 70
+
+[sensors]
+cpu_names = ["k10temp"]
+mem_names = ["spd5118"]
+mem_fallback_to_cpu = true
+
+[curves]
+cpu = [[40, 20], [55, 35], [65, 55], [75, 75], [85, 100]]
+mem = [[35, 20], [50, 40], [60, 60], [70, 80], [80, 100]]

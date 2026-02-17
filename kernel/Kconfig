@@ -1,0 +1,11 @@
+config FEVM_IP3_WMI_FAN
+	tristate "FEVM IP3 WMI fan control"
+	depends on ACPI_WMI
+	help
+	  Add support for controlling FEVM FA880 PRO fan duty through
+	  the vendor WMI method SetFanControl (GUID:
+	  99D89064-8D50-42BB-BEA9-155B2E5D0FCD).
+	
+	  The driver creates:
+	    /sys/devices/platform/fevm-ip3-wmi/fan1_duty
+	    /sys/devices/platform/fevm-ip3-wmi/fan2_duty

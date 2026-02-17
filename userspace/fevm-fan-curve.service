@@ -1,0 +1,12 @@
+[Unit]
+Description=FEVM FA880 PRO Fan Curve Controller
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/fevm-fan-curve.py --config /etc/fevm-fan-curve.toml
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
