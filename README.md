@@ -136,6 +136,12 @@ cargo check --manifest-path userspace/rust/fevm-fan-curve-rs/Cargo.toml
 
 `kernel/dkms.conf` 已给出模板，你可以按发行版习惯接入打包流程。
 
+也可以直接用仓库脚本一键安装到当前内核：
+
+```bash
+./scripts/install_dkms.sh
+```
+
 ## 许可证
 
 - `kernel/*`：GPL-2.0-only
