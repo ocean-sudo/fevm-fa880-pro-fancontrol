@@ -5,6 +5,9 @@ poll_sec = 1.0
 min_duty = 20
 max_duty = 100
 failsafe_duty = 70
+duty_deadband = 2
+missing_path_log_sec = 60.0
+error_log_sec = 60.0
 
 [sensors]
 cpu_names = ["k10temp"]

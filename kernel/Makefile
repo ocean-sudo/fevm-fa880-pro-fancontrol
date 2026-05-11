@@ -8,7 +8,7 @@ PWD  := $(shell pwd)
 obj-m := fevm_ip3_wmi_fan.o
 
 all:
-	$(MAKE) LLVM=1 -C $(KDIR) M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean

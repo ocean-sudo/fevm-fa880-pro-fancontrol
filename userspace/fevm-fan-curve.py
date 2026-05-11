@@ -5,7 +5,7 @@ import logging
 import os
 import signal
 import time
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 try:
     import tomllib as toml_reader  # Python 3.11+
@@ -24,6 +24,9 @@ DEFAULT_CONFIG: Dict[str, object] = {
     "min_duty": 20,
     "max_duty": 100,
     "failsafe_duty": 70,
+    "duty_deadband": 2,
+    "missing_path_log_sec": 60.0,
+    "error_log_sec": 60.0,
     "cpu_sensor_names": ["k10temp"],
     "mem_sensor_names": ["spd5118"],
     "mem_fallback_to_cpu": True,
@@ -69,6 +72,9 @@ def load_config(path: str) -> Dict[str, object]:
         "min_duty": int(DEFAULT_CONFIG["min_duty"]),
         "max_duty": int(DEFAULT_CONFIG["max_duty"]),
         "failsafe_duty": int(DEFAULT_CONFIG["failsafe_duty"]),
+        "duty_deadband": int(DEFAULT_CONFIG["duty_deadband"]),
+        "missing_path_log_sec": float(DEFAULT_CONFIG["missing_path_log_sec"]),
+        "error_log_sec": float(DEFAULT_CONFIG["error_log_sec"]),
         "cpu_sensor_names": list(DEFAULT_CONFIG["cpu_sensor_names"]),
         "mem_sensor_names": list(DEFAULT_CONFIG["mem_sensor_names"]),
         "mem_fallback_to_cpu": bool(DEFAULT_CONFIG["mem_fallback_to_cpu"]),
@@ -101,6 +107,12 @@ def load_config(path: str) -> Dict[str, object]:
         cfg["max_duty"] = int(general["max_duty"])
     if "failsafe_duty" in general:
         cfg["failsafe_duty"] = int(general["failsafe_duty"])
+    if "duty_deadband" in general:
+        cfg["duty_deadband"] = int(general["duty_deadband"])
+    if "missing_path_log_sec" in general:
+        cfg["missing_path_log_sec"] = float(general["missing_path_log_sec"])
+    if "error_log_sec" in general:
+        cfg["error_log_sec"] = float(general["error_log_sec"])
 
     if "cpu_names" in sensors:
         cfg["cpu_sensor_names"] = [str(x) for x in sensors["cpu_names"]]
@@ -176,10 +188,21 @@ def clamp_duty(duty: int, min_duty: int, max_duty: int) -> int:
     return max(min_duty, min(max_duty, duty))
 
 
-def write_duty(path: str, duty: int, min_duty: int, max_duty: int):
+def should_write_duty(target_duty: int, last_duty: Optional[int], duty_deadband: int) -> bool:
+    if last_duty is None:
+        return True
+    return abs(target_duty - last_duty) >= duty_deadband
+
+
+def write_duty(path: str, duty: int, min_duty: int, max_duty: int) -> int:
     duty = clamp_duty(duty, min_duty, max_duty)
     with open(path, "w", encoding="utf-8") as f:
         f.write(str(duty))
+    return duty
+
+
+def missing_paths(paths: Sequence[str]) -> List[str]:
+    return [path for path in paths if not os.path.exists(path)]
 
 
 def main() -> int:
@@ -204,6 +227,9 @@ def main() -> int:
     min_duty = int(cfg["min_duty"])
     max_duty = int(cfg["max_duty"])
     failsafe_duty = int(cfg["failsafe_duty"])
+    duty_deadband = max(1, int(cfg["duty_deadband"]))
+    missing_path_log_sec = max(1.0, float(cfg["missing_path_log_sec"]))
+    error_log_sec = max(1.0, float(cfg["error_log_sec"]))
     cpu_curve: Curve = list(cfg["cpu_curve"])
     mem_curve: Curve = list(cfg["mem_curve"])
 
@@ -221,33 +247,77 @@ def main() -> int:
             raise SystemExit(f"MEM hwmon not found, names={cfg['mem_sensor_names']}")
 
     logging.info("cpu_hwmons=%s mem_hwmons=%s", cpu_hwmons, mem_hwmons)
-    logging.info("fan1=%s fan2=%s poll=%.2fs", fan1_path, fan2_path, poll_sec)
+    logging.info(
+        "fan1=%s fan2=%s poll=%.2fs duty_deadband=%d",
+        fan1_path,
+        fan2_path,
+        poll_sec,
+        duty_deadband,
+    )
+
+    last_fan1_duty: Optional[int] = None
+    last_fan2_duty: Optional[int] = None
+    last_missing_path_log = 0.0
+    last_error_log = 0.0
 
     while RUNNING:
+        missing = missing_paths([fan1_path, fan2_path])
+        if missing:
+            now = time.monotonic()
+            if now - last_missing_path_log >= missing_path_log_sec:
+                logging.warning(
+                    "fan sysfs path missing; is fevm_ip3_wmi_fan loaded? missing=%s",
+                    missing,
+                )
+                last_missing_path_log = now
+            last_fan1_duty = None
+            last_fan2_duty = None
+            time.sleep(poll_sec)
+            continue
+
         try:
             cpu_t = max_temp_in_hwmons(cpu_hwmons)
             mem_t = max_temp_in_hwmons(mem_hwmons)
 
-            cpu_duty = lerp_curve(cpu_t, cpu_curve)
-            mem_duty = lerp_curve(mem_t, mem_curve)
+            cpu_duty = clamp_duty(lerp_curve(cpu_t, cpu_curve), min_duty, max_duty)
+            mem_duty = clamp_duty(lerp_curve(mem_t, mem_curve), min_duty, max_duty)
 
-            write_duty(fan1_path, cpu_duty, min_duty, max_duty)
-            write_duty(fan2_path, mem_duty, min_duty, max_duty)
+            fan1_written = False
+            fan2_written = False
+            if should_write_duty(cpu_duty, last_fan1_duty, duty_deadband):
+                last_fan1_duty = write_duty(fan1_path, cpu_duty, min_duty, max_duty)
+                fan1_written = True
+            if should_write_duty(mem_duty, last_fan2_duty, duty_deadband):
+                last_fan2_duty = write_duty(fan2_path, mem_duty, min_duty, max_duty)
+                fan2_written = True
 
             logging.debug(
-                "cpu=%.1fC mem=%.1fC -> fan1=%d fan2=%d",
+                "cpu=%.1fC mem=%.1fC -> fan1=%d%s fan2=%d%s",
                 cpu_t,
                 mem_t,
-                clamp_duty(cpu_duty, min_duty, max_duty),
-                clamp_duty(mem_duty, min_duty, max_duty),
+                cpu_duty,
+                " write" if fan1_written else "",
+                mem_duty,
+                " write" if fan2_written else "",
             )
         except Exception as e:
-            logging.exception("fan loop error: %s; applying failsafe duty", e)
+            now = time.monotonic()
+            if now - last_error_log >= error_log_sec:
+                logging.exception("fan loop error: %s; applying failsafe duty", e)
+                last_error_log = now
+            else:
+                logging.debug("fan loop error suppressed: %s", e)
             try:
-                write_duty(fan1_path, failsafe_duty, min_duty, max_duty)
-                write_duty(fan2_path, failsafe_duty, min_duty, max_duty)
-            except Exception:
-                logging.exception("failed to write failsafe duty")
+                failsafe_duty = clamp_duty(failsafe_duty, min_duty, max_duty)
+                if should_write_duty(failsafe_duty, last_fan1_duty, duty_deadband):
+                    last_fan1_duty = write_duty(fan1_path, failsafe_duty, min_duty, max_duty)
+                if should_write_duty(failsafe_duty, last_fan2_duty, duty_deadband):
+                    last_fan2_duty = write_duty(fan2_path, failsafe_duty, min_duty, max_duty)
+            except Exception as failsafe_error:
+                now = time.monotonic()
+                if now - last_error_log >= error_log_sec:
+                    logging.exception("failed to write failsafe duty: %s", failsafe_error)
+                    last_error_log = now
 
         time.sleep(poll_sec)
 
